@@ -1,0 +1,27 @@
+# Python 隔离环境与缓存
+.venv/
+__pycache__/
+*.py[cod]
+
+# 构建产物（发布时通过 GitHub Releases 单独上传）
+build/
+release/
+desktop_app/*.spec
+
+# 本机运行数据和下载内容
+data/
+downloads/
+.hf-cache/
+*.hfdownload
+*.hfdownload.aria2
+*.hfdownload.json
+
+# 测试和测速产物
+test-evidence/
+连接测试/
+.pytest_cache/
+*.log
+aria2-running.json
+aria2-16-running.json
+aria2测速结果.json
+aria2-16测速结果.json

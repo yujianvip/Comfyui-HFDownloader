@@ -1,0 +1,20 @@
+HF 模型下载器 1.0
+
+本项目的原创 app.py / core.py 代码以 MIT License 提供，见 LICENSE.txt。
+
+aria2 1.37.0 Windows 64-bit
+License: GNU GPL version 2 or later
+Project/source: https://github.com/aria2/aria2
+Release/source archive: https://github.com/aria2/aria2/releases/tag/release-1.37.0
+Bundled as a separate executable, controlled over localhost JSON-RPC.
+License: licenses/aria2-COPYING.txt
+Build includes OpenSSL-related notices: licenses/LICENSE.OpenSSL
+
+Python 3.11 / Tcl/Tk
+Python: https://www.python.org/psf/license/
+Tcl/Tk: https://www.tcl.tk/software/tcltk/license.html
+Runtime license texts included in licenses/.
+
+PyInstaller
+https://pyinstaller.org/
+GPL with bootloader exception permitting distribution of bundled applications.
