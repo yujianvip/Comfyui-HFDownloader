@@ -19,7 +19,7 @@ from core import Engine, parse_hf_url, file_url, file_page_url, resolve_file, li
 BASE = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
 RESOURCES = Path(getattr(sys, '_MEIPASS', BASE))
 MODE = 8
-APP_VERSION = '1.0.0'
+APP_VERSION = '1.0.1'
 STATES = {'staged':'○ 等待确认', 'preparing':'… 读取信息', 'active':'● 下载中', 'waiting':'○ 排队中', 'paused':'Ⅱ 已暂停', 'error':'! 下载失败', 'complete':'✓ 已完成', 'checking':'◇ 校验中', 'removing':'… 正在移除'}
 TOKEN_CREDENTIAL = 'HFDesktopDownloader.Token.v1'
 QUEUE_SCHEMA_VERSION = 1
@@ -736,7 +736,7 @@ class ModernDropdown(tk.Canvas):
         above=anchor_y-height-4
         y=below if below+height<=work_area[3]-8 or above<work_area[1]+8 else above
         x,y,width,height=fit_window_rect(x,y,width,height,work_area)
-        popup=tk.Toplevel(self)
+        popup=tk.Toplevel(self);popup.withdraw()
         popup.overrideredirect(True)
         popup.configure(bg='#f5f7f8')
         place_toplevel(popup,x,y,width,height,work_area,8)
@@ -796,10 +796,9 @@ class ModernDropdown(tk.Canvas):
         popup.bind('<Escape>',lambda _:self.close_popup())
         popup.bind('<ButtonPress-1>',lambda event:self.close_popup() if event.widget is not rows else None)
         popup.bind('<FocusOut>',lambda _:self.after(50,lambda:self.close_popup() if self.popup is popup else None))
-        popup.grab_set()
-        rows.focus_set()
         popup.update_idletasks()
         draw_surface();draw_rows();self.redraw()
+        popup.deiconify();popup.lift();popup.grab_set();rows.focus_set()
         return 'break'
 
     def close_popup(self):
@@ -818,6 +817,7 @@ class ModernDropdown(tk.Canvas):
 class EditContextMenu(tk.Toplevel):
     def __init__(self, owner, actions):
         super().__init__(owner)
+        self.withdraw()
         self.owner=owner
         self.actions=actions
         self.rows=[]
@@ -858,7 +858,7 @@ class EditContextMenu(tk.Toplevel):
         work_area=monitor_work_area(self.owner,x,y)
         x,y,width,height=fit_window_rect(x,y,self.width,self.height,work_area)
         place_toplevel(self,x,y,width,height,work_area,8)
-        self.lift()
+        self.deiconify();self.lift()
         self.surface.focus_set()
         owner_window=self.owner.winfo_toplevel()
         self._outside_binding=(owner_window,owner_window.bind('<ButtonPress-1>',lambda _:self.close(),add='+'))
@@ -1027,7 +1027,7 @@ class FolderList(tk.Canvas):
     def show_name_tip(self,index):
         self._tip_after=None
         if not self.winfo_exists() or self.hovered!=index or not 0<=index<len(self.items):return
-        self._tip_window=tk.Toplevel(self)
+        self._tip_window=tk.Toplevel(self);self._tip_window.withdraw()
         self._tip_window.overrideredirect(True)
         self._tip_window.attributes('-topmost',True)
         tk.Label(self._tip_window,text=self.items[index],bg='#27343b',fg='#ffffff',padx=9,pady=5,
@@ -1038,6 +1038,7 @@ class FolderList(tk.Canvas):
         area=monitor_work_area(self,pointer_x,pointer_y)
         x,y,width,height=fit_window_rect(pointer_x+12,pointer_y+14,width,height,area)
         place_toplevel(self._tip_window,x,y,width,height,area,8)
+        self._tip_window.deiconify();self._tip_window.lift()
 
     def step(self,delta):
         if not self.items:return 'break'
@@ -1096,7 +1097,7 @@ class Tooltip:
         if self.window:return
         content=self.text() if callable(self.text) else self.text
         if not content:return
-        self.window=tk.Toplevel(self.widget)
+        self.window=tk.Toplevel(self.widget);self.window.withdraw()
         self.window.overrideredirect(True)
         self.window.attributes('-topmost',True)
         anchor_x=self.widget.winfo_rootx();anchor_y=self.widget.winfo_rooty()
@@ -1111,6 +1112,7 @@ class Tooltip:
         y=below if below+height<=area[3]-8 or above<area[1]+8 else above
         x,y,width,height=fit_window_rect(anchor_x,y,width,height,area)
         place_toplevel(self.window,x,y,width,height,area,8)
+        self.window.deiconify();self.window.lift()
 
     def hide(self,_event=None):
         if self.window:self.window.destroy();self.window=None
@@ -1512,7 +1514,7 @@ class App(tk.Tk):
         self.tree.tag_configure('checking',foreground='#2563a6',background='#eef6ff')
         self.tree.tag_configure('complete',foreground='#344550',background='#f5f7f8')
         self.tree.tag_configure('error',foreground='#3f3432',background='#fff1f0')
-        detail_row=ttk.Frame(outer,style='Shell.TFrame',height=30)
+        detail_row=ttk.Frame(outer,style='Shell.TFrame')
         detail_row.pack(fill='x',pady=(6,0));detail_row.pack_propagate(False)
         details_label=ttk.Label(detail_row,textvariable=self.details,style='QueueDetail.TLabel',
                                 anchor='w',width=1)
@@ -1521,6 +1523,7 @@ class App(tk.Tk):
         copy_detail=ttk.Button(detail_row,text='复制详情',style='Queue.TButton',
                                command=lambda:self.copy_text(self.details.get(),'已复制任务详情。'))
         copy_detail.pack(side='right',padx=(8,0))
+        detail_row.configure(height=copy_detail.winfo_reqheight())
         actions = ttk.Frame(outer)
         actions.pack(fill='x',pady=(7,4))
         operations=ttk.Frame(actions,style='Shell.TFrame');operations.grid(row=0,column=0,sticky='w')
@@ -1600,6 +1603,7 @@ class App(tk.Tk):
         self.note.set(message)
 
     def center_dialog(self, win, width, height):
+        win.withdraw()
         self.update_idletasks()
         owner=win.master if isinstance(win.master,tk.Misc) and win.master.winfo_exists() else self
         owner.update_idletasks()
@@ -1640,7 +1644,8 @@ class App(tk.Tk):
         ttk.Button(buttons,text='\u53d6\u6d88',style='Secondary.TButton',command=dialog.destroy).pack(side='right')
         ttk.Button(buttons,text='\u521b\u5efa',style='Accent.TButton',command=accept).pack(side='right',padx=(0,8))
         dialog.bind('<Return>',lambda _:accept());dialog.bind('<Escape>',lambda _:dialog.destroy())
-        dialog.protocol('WM_DELETE_WINDOW',dialog.destroy);dialog.grab_set();entry.focus_set();parent.wait_window(dialog)
+        dialog.protocol('WM_DELETE_WINDOW',dialog.destroy)
+        dialog.deiconify();dialog.lift();dialog.grab_set();entry.focus_set();parent.wait_window(dialog)
         return result[0] if result else None
 
     def decision_dialog(self, parent, title, message, options, detail=''):
@@ -1839,6 +1844,7 @@ class App(tk.Tk):
             self.comfy_root.set(str(root));self.persist();win.destroy()
         footer=ttk.Frame(box,style='Card.TFrame');footer.pack(side='bottom',fill='x',pady=(12,0))
         ttk.Button(footer,text='\u4fdd\u5b58',style='Accent.TButton',command=save).pack(side='right')
+        win.update_idletasks();win.deiconify();win.lift()
 
     def comfy_preferences(self, info):
         model_kind=detect_model_type(info['filename'])
@@ -3348,7 +3354,7 @@ class App(tk.Tk):
         self.note.set('\u6bcf\u6587\u4ef6\u8fde\u63a5\u6570\u5df2\u8bbe\u4e3a '+self.connections.get()+' \u8def\uff0c\u4ec5\u5f71\u54cd\u4e4b\u540e\u65b0\u6dfb\u52a0\u7684\u4efb\u52a1\u3002')
 
     def advanced(self):
-        win=tk.Toplevel(self);win.title('HF Token \u4e0e\u4f7f\u7528\u5e2e\u52a9');self.center_dialog(win,680,440)
+        win=tk.Toplevel(self);win.title('HF Token \u4e0e\u4f7f\u7528\u5e2e\u52a9');self.center_dialog(win,680,500)
         win.configure(bg='#f5f7f8')
         surface=RoundedSurface(win,padding=(24,20),stretch_y=True);surface.pack(fill='both',expand=True,padx=12,pady=12)
         box=surface.content
@@ -3395,6 +3401,7 @@ class App(tk.Tk):
         ttk.Button(buttons,text='\u4fdd\u5b58 Token',style='Accent.TButton',command=save).pack(side='left')
         ttk.Button(buttons,text='\u5220\u9664\u5df2\u4fdd\u5b58 Token',command=remove).pack(side='left',padx=8)
         ttk.Button(buttons,text='\u5b8c\u6210',command=win.destroy).pack(side='right')
+        win.update_idletasks();win.deiconify();win.lift()
 
     def persist(self):
         try:
