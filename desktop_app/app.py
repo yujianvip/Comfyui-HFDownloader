@@ -1898,22 +1898,6 @@ class App(tk.Tk):
         viewport.configure(xscrollcommand=horizontal.set)
         columns=ttk.Frame(viewport,style='Card.TFrame')
         column_window=viewport.create_window((0,0),window=columns,anchor='nw')
-        hint_path_var=tk.StringVar()
-        hint_text_var=tk.StringVar()
-        hint_frame=tk.Frame(viewport,bg='#f7fafc',highlightbackground='#dce7ed',highlightthickness=1,padx=16,pady=14)
-        tk.Label(hint_frame,text='目录导航',bg='#f7fafc',fg='#27343b',
-                 font=('Microsoft YaHei UI',12,'bold')).pack(anchor='w')
-        tk.Label(hint_frame,textvariable=hint_text_var,bg='#f7fafc',fg='#586870',
-                 font=('Microsoft YaHei UI',10)).pack(anchor='w',pady=(8,14))
-        tk.Label(hint_frame,text='当前保存位置',bg='#f7fafc',fg='#586870',
-                 font=('Microsoft YaHei UI',10)).pack(anchor='w')
-        hint_path=tk.Entry(hint_frame,textvariable=hint_path_var,state='readonly',readonlybackground='#f7fafc',
-                           fg='#1d485f',font=('Microsoft YaHei UI',10),relief='flat',bd=0,highlightthickness=0)
-        hint_path.pack(fill='x',pady=(4,10))
-        Tooltip(hint_path,lambda:hint_path_var.get())
-        ttk.Button(hint_frame,text='复制路径',style='Queue.TButton',
-                   command=lambda:self.copy_text(hint_path_var.get(),'已复制目标保存路径。')).pack(anchor='w')
-        hint_window=viewport.create_window((0,0),window=hint_frame,anchor='nw',state='hidden')
         def sync_horizontal(event=None):
             viewport.update_idletasks()
             visible_width=max(1,viewport.winfo_width())
@@ -1922,11 +1906,6 @@ class App(tk.Tk):
             content_height=max(1,viewport.winfo_height(),columns.winfo_reqheight())
             viewport.itemconfigure(column_window,width=content_width,height=content_height)
             viewport.configure(scrollregion=(0,0,content_width,content_height))
-            gap=visible_width-required_width
-            if gap>=300:
-                viewport.coords(hint_window,required_width+28,24)
-                viewport.itemconfigure(hint_window,width=min(440,gap-52),state='normal')
-            else:viewport.itemconfigure(hint_window,state='hidden')
             if required_width<=visible_width:
                 viewport.xview_moveto(0)
                 if horizontal.winfo_manager():horizontal.pack_forget()
@@ -2089,8 +2068,6 @@ class App(tk.Tk):
             if active_parent[0] not in pane_parents:active_parent[0]=parents[-2] if len(parents)>1 else '.'
             paint_active_layer()
             target_suffix.set(str(target()))
-            hint_path_var.set(str(target()))
-            hint_text_var.set('选择左侧文件夹，查看下一级目录。' if current=='.' else '已选中此目录，可继续进入子文件夹。')
             def finish_layout():
                 sync_horizontal()
                 for widget,index,parent_path in pending_selections:
