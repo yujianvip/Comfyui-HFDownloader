@@ -9,13 +9,17 @@ import subprocess
 import time
 from urllib import request, parse, error
 
-HOSTS = {'huggingface.co', 'www.huggingface.co', 'hf.co'}
+HOSTS = {'huggingface.co', 'www.huggingface.co', 'hf.co', 'hf-mirror.com'}
+
+def endpoint(info):
+    """Keep downloads and Hub API requests on the host selected in the pasted URL."""
+    return 'https://hf-mirror.com' if info.get('host') == 'hf-mirror.com' else 'https://huggingface.co'
 
 def parse_hf_url(text):
     text = text.strip().replace('\\_', '_')
     p = parse.urlsplit(text)
     if p.scheme != 'https' or p.hostname not in HOSTS or p.username or p.password:
-        raise ValueError('请输入 https://huggingface.co/ 开头的模型或文件链接。')
+        raise ValueError('请输入 https://huggingface.co/ 或 https://hf-mirror.com/ 开头的模型或文件链接。')
     parts = [parse.unquote(x) for x in p.path.strip('/').split('/') if x]
     kind = 'model'
     if parts and parts[0] == 'datasets':
@@ -39,17 +43,18 @@ def parse_hf_url(text):
     for value in (repo, revision, filename, folder):
         if any(x in ('.', '..') for x in value.split('/')) or '\\' in value or '\x00' in value:
             raise ValueError('链接中包含不安全的路径。')
-    return {'repo': repo, 'revision': revision, 'filename': filename, 'folder': folder, 'kind': kind}
+    selected_host = 'hf-mirror.com' if p.hostname == 'hf-mirror.com' else 'huggingface.co'
+    return {'repo': repo, 'revision': revision, 'filename': filename, 'folder': folder, 'kind': kind, 'host': selected_host}
 
 def file_url(info, filename=None, revision=None):
     prefix = 'datasets/' if info['kind'] == 'dataset' else ''
-    return ('https://huggingface.co/' + prefix + parse.quote(info['repo'], safe='/') + '/resolve/'
+    return (endpoint(info) + '/' + prefix + parse.quote(info['repo'], safe='/') + '/resolve/'
             + parse.quote(revision or info['revision'], safe='') + '/'
             + parse.quote(filename or info['filename'], safe='/'))
 
 def file_page_url(info):
     prefix = 'datasets/' if info['kind'] == 'dataset' else ''
-    return ('https://huggingface.co/' + prefix + parse.quote(info['repo'], safe='/') + '/blob/'
+    return (endpoint(info) + '/' + prefix + parse.quote(info['repo'], safe='/') + '/blob/'
             + parse.quote(info['revision'], safe='') + '/'
             + parse.quote(info['filename'], safe='/'))
 
@@ -190,7 +195,7 @@ def list_repo(info, proxy='', token=''):
     tree_path = parse.quote(info['revision'], safe='')
     if folder:
         tree_path += '/' + parse.quote(folder, safe='/')
-    url = f"https://huggingface.co/api/{plural}/{parse.quote(info['repo'], safe='/')}/tree/{tree_path}?recursive=true&limit=1000"
+    url = f"{endpoint(info)}/api/{plural}/{parse.quote(info['repo'], safe='/')}/tree/{tree_path}?recursive=true&limit=1000"
     files = []
     op = opener(proxy)
     for _ in range(100):

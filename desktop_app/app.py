@@ -21,7 +21,7 @@ from core import Engine, parse_hf_url, file_url, file_page_url, resolve_file, li
 BASE = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
 RESOURCES = Path(getattr(sys, '_MEIPASS', BASE))
 MODE = 8
-APP_VERSION = '1.1.0'
+APP_VERSION = '1.2.0'
 UPDATE_API = 'https://api.github.com/repos/yujianvip/Comfyui-HFDownloader/releases/latest'
 STATES = {'staged':'○ 等待确认', 'preparing':'… 读取信息', 'active':'● 下载中', 'waiting':'○ 排队中', 'paused':'Ⅱ 已暂停', 'error':'! 下载失败', 'complete':'✓ 已完成', 'checking':'◇ 校验中', 'removing':'… 正在移除'}
 TOKEN_CREDENTIAL = 'HFDesktopDownloader.Token.v1'
@@ -1609,12 +1609,16 @@ class App(tk.Tk):
         latest=self.version_tuple(release.get('tag_name',''))
         current=self.version_tuple(APP_VERSION)
         if not latest or not current or latest<=current:return None
-        expected=f'HFDownloader-v{release["tag_name"].lstrip("v")}-win64.zip'.casefold()
+        version=release['tag_name'].lstrip('v')
+        expected_name=f'HFDownloader-v{version}-win64.zip'
+        expected=expected_name.casefold()
+        expected_url=f'https://github.com/yujianvip/Comfyui-HFDownloader/releases/download/v{version}/{expected_name}'
         assets=release.get('assets',[])
-        asset=next((item for item in assets if str(item.get('name','')).casefold()==expected),None)
-        if not asset or not asset.get('browser_download_url'):
+        asset=next((item for item in assets if str(item.get('name','')).casefold()==expected
+                    and item.get('browser_download_url')==expected_url),None)
+        if not asset:
             raise ValueError('发现新版本，但 Release 中没有与版本号匹配的 Windows 更新包。')
-        return {'version':release['tag_name'].lstrip('v'),'url':asset['browser_download_url'],
+        return {'version':version,'url':asset['browser_download_url'],
                 'name':asset['name'],'page':release.get('html_url','')}
 
     def check_for_updates(self, manual=False):
