@@ -1,5 +1,6 @@
 import hashlib
 import http.server
+import io
 import json
 import os
 from pathlib import Path
@@ -23,16 +24,30 @@ class UrlTests(unittest.TestCase):
         text=f'链接：{first}，重复 {first}。Markdown：[{second}]({second})！'
         self.assertEqual(extract_hf_urls(text),[first,second])
 
+    def test_update_rejects_a_windows_package_from_another_version(self):
+        payload=json.dumps({'tag_name':'v9.9.9','html_url':'https://example.invalid/release','assets':[
+            {'name':'HFDownloader-v1.0.0-win64.zip','browser_download_url':'https://example.invalid/old.zip'}
+        ]}).encode()
+        class Response(io.BytesIO):
+            def __enter__(self):return self
+            def __exit__(self,*_args):self.close()
+        class Opener:
+            def open(self,*_args,**_kwargs):return Response(payload)
+        app=object.__new__(App);app.github_opener=lambda:Opener()
+        with self.assertRaisesRegex(ValueError,'版本号匹配'):
+            App.fetch_latest_release(app)
+
     def test_invalid_settings_fall_back_without_blocking_startup(self):
         warnings=[]
         settings=normalize_settings({'default_folder':'yes','folder':None,'proxy':42,'parallel':'abc',
-                                     'connections':99,'comfy_root':[], 'diffusion_dir':'other',
+                                     'connections':99,'comfy_root':[], 'diffusion_dir':'other','clip_dir':'other',
                                      'comfy_favorites':'loras','input_rows':100},warnings)
         self.assertTrue(settings['default_folder'])
         self.assertEqual(settings['parallel'],3)
         self.assertEqual(settings['connections'],8)
         self.assertEqual(settings['comfy_root'],'')
         self.assertEqual(settings['diffusion_dir'],'diffusion_models')
+        self.assertEqual(settings['clip_dir'],'clip')
         self.assertEqual(settings['comfy_favorites'],[])
         self.assertEqual(settings['input_rows'],18)
         self.assertNotIn('proxy',settings)
@@ -67,6 +82,7 @@ class UrlTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(),b'old model')
             self.assertEqual(calls[0][0],'addUri')
             self.assertEqual(calls[0][1][1]['out'],'model.bin.hfdownload')
+            self.assertNotIn('lowest-speed-limit',calls[0][1][1])
             target.with_name('model.bin.hfdownload').write_bytes(b'new model')
             target.with_name('model.bin.hfdownload').replace(target)
             self.assertEqual(target.read_bytes(),b'new model')
@@ -185,6 +201,20 @@ class UrlTests(unittest.TestCase):
         app=object.__new__(App);app.diffusion_dir=Value()
         self.assertEqual(App.comfy_preferences(app,{'filename':'weights.safetensors'})[0],'diffusion_models')
 
+    def test_clip_recommendation_follows_selected_directory(self):
+        class Value:
+            def __init__(self,value):self.value=value
+            def get(self):return self.value
+        app=object.__new__(App)
+        app.clip_dir=Value('clip')
+        clip={'filename':'text_encoders/t5xxl.safetensors'}
+        self.assertEqual(App.comfy_preferences(app,clip)[:2],('clip','text_encoders'))
+        app.clip_dir=Value('text_encoders')
+        self.assertEqual(App.comfy_preferences(app,clip)[:2],('text_encoders','clip'))
+        self.assertEqual(normalize_settings({'clip_dir':'clip'})['clip_dir'],'clip')
+        self.assertEqual(normalize_settings({})['clip_dir'],'clip')
+        self.assertEqual(normalize_settings({'clip_dir':'text_encoders'})['clip_dir'],'text_encoders')
+
     def test_comfy_batch_only_locates_a_shared_recognized_type(self):
         class Value:
             def get(self):return 'diffusion_models'
@@ -281,6 +311,28 @@ class UrlTests(unittest.TestCase):
         self.assertEqual(app.jobs['job']['status'],'active')
         self.assertNotIn('removing',app.jobs['job'])
         self.assertTrue(notes)
+
+    def test_retry_clears_detached_gid_when_readding_fails(self):
+        app=object.__new__(App)
+        job={'id':'job','gid':'old-gid','status':'error','filename':'model.bin','path':'C:\\models\\model.bin',
+             'url':'https://huggingface.co/owner/model/resolve/main/model.bin','connections':8,'elapsed':0}
+        app.jobs={'job':job};app.note=SimpleNamespace(set=lambda _value:None)
+        app.render=lambda *_:None;app.persist=lambda:None;app.selection_changed=lambda:None
+        calls=[]
+        class RetryEngine:
+            def call(self,method,*args):
+                calls.append((method,args));return None
+            def add(self,*_args):
+                raise RuntimeError('temporary add failure')
+        app.engine=RetryEngine()
+        def submit(func,success,failure):
+            try:success(func())
+            except Exception as exc:failure(str(exc))
+        app.submit=submit
+        App.start_job(app,'job','','')
+        self.assertEqual(job['status'],'error')
+        self.assertIsNone(job['gid'])
+        self.assertEqual([name for name,_ in calls],['forceRemove','removeDownloadResult'])
 
     def test_runtime_data_moves_outside_the_program_folder(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -272,7 +272,7 @@ class Engine:
         opts = {'dir':str(final.parent), 'out':final.name+'.hfdownload', 'max-connection-per-server':str(job['connections']),
                 'split':str(job['connections']), 'min-split-size':'4M', 'continue':'true', 'auto-file-renaming':'false',
                 'allow-overwrite':'false', 'all-proxy':proxy, 'max-tries':'10', 'retry-wait':'5', 'timeout':'60',
-                'connect-timeout':'20', 'lowest-speed-limit':'20K', 'pause':'true' if paused else 'false', 'check-integrity':'true'}
+                'connect-timeout':'20', 'pause':'true' if paused else 'false', 'check-integrity':'true'}
         if job.get('sha256'):
             opts['checksum'] = 'sha-256='+job['sha256']
         if token:

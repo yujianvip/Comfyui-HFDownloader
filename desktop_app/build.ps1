@@ -26,7 +26,8 @@ New-Item -ItemType Directory -Path $stage,$releaseRoot -Force | Out-Null
 
 $sourceSnapshot = Join-Path $stage 'source'
 $sourceFiles = @(
-    'app.py','core.py','test_download.py','LICENSE.txt','THIRD_PARTY.txt',
+    'app.py','core.py','test_download.py','updater.ps1','LICENSE.txt','THIRD_PARTY.txt',
+    'sounds\波浪.mp3','sounds\叮.mp3',
     'vendor\aria2c.exe','vendor\aria2-COPYING.txt','vendor\LICENSE.OpenSSL',
     'vendor\aria2-AUTHORS.txt','vendor\Python-LICENSE.txt','vendor\Tcl-license.terms',
     'vendor\aria2-release-1.37.0.tar.gz'
@@ -73,7 +74,9 @@ try {
     [Environment]::SetEnvironmentVariable('PYTHONUSERBASE',(Join-Path $stage 'isolated-userbase'),'Process')
     & $python -m PyInstaller --noconfirm --clean --windowed --onedir --name HFDownloader `
         --distpath $dist --workpath $work --specpath $stage --version-file $versionFile `
-        --add-binary "$sourceSnapshot\vendor\aria2c.exe;vendor" (Join-Path $sourceSnapshot 'app.py')
+        --add-binary "$sourceSnapshot\vendor\aria2c.exe;vendor" `
+        --add-data "$sourceSnapshot\sounds;sounds" `
+        --add-data "$sourceSnapshot\updater.ps1;." (Join-Path $sourceSnapshot 'app.py')
     $pyInstallerExitCode = $LASTEXITCODE
 }
 finally {
@@ -96,7 +99,7 @@ New-Item -ItemType Directory -Path $licenses,$sources,$appSources -Force | Out-N
 Copy-Item -LiteralPath @((Join-Path $sourceSnapshot 'THIRD_PARTY.txt'),(Join-Path $sourceSnapshot 'LICENSE.txt')) -Destination $assembled -Force
 Copy-Item -LiteralPath @((Join-Path $sourceSnapshot 'vendor\aria2-COPYING.txt'),(Join-Path $sourceSnapshot 'vendor\LICENSE.OpenSSL'),(Join-Path $sourceSnapshot 'vendor\aria2-AUTHORS.txt'),(Join-Path $sourceSnapshot 'vendor\Python-LICENSE.txt'),(Join-Path $sourceSnapshot 'vendor\Tcl-license.terms')) -Destination $licenses -Force
 Copy-Item -LiteralPath (Join-Path $sourceSnapshot 'vendor\aria2-release-1.37.0.tar.gz') -Destination $sources -Force
-Copy-Item -LiteralPath @((Join-Path $sourceSnapshot 'app.py'),(Join-Path $sourceSnapshot 'core.py'),(Join-Path $sourceSnapshot 'test_download.py'),(Join-Path $sourceSnapshot 'LICENSE.txt'),(Join-Path $sourceSnapshot 'THIRD_PARTY.txt')) -Destination $appSources -Force
+Copy-Item -LiteralPath @((Join-Path $sourceSnapshot 'app.py'),(Join-Path $sourceSnapshot 'core.py'),(Join-Path $sourceSnapshot 'test_download.py'),(Join-Path $sourceSnapshot 'updater.ps1'),(Join-Path $sourceSnapshot 'LICENSE.txt'),(Join-Path $sourceSnapshot 'THIRD_PARTY.txt')) -Destination $appSources -Force
 
 if (Test-Path -LiteralPath (Join-Path $assembled 'data')) { throw 'Release package must not contain runtime data.' }
 if (Test-Path -LiteralPath (Join-Path $assembled 'downloads')) { throw 'Release package must not contain user downloads.' }

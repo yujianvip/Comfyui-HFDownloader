@@ -1,8 +1,10 @@
 # HF 模型下载器
 
+## 教程：[bilibili.com/video/BV1zHHQ6vEh7](https://www.bilibili.com/video/BV1zHHQ6vEh7)
+
 HF 模型下载器是一款 Hugging Face 文件下载工具。它可以直接下载单个文件，也可以读取模型或数据集仓库的文件清单，选择所需文件后批量下载；同时提供针对 ComfyUI 模型目录的保存位置选择功能。
 
-当前版本：`1.0.1`
+当前版本：`1.1.0`
 
 ## 主要功能
 

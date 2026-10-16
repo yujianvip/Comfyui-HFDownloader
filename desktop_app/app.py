@@ -6,12 +6,14 @@ from pathlib import Path, PurePosixPath
 import queue
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import ttk, filedialog
 from tkinter import font as tkfont
+import urllib.request
 import uuid
 
 from core import Engine, parse_hf_url, file_url, file_page_url, resolve_file, list_repo, output_path, safe_piece, detect_model_type, validate_proxy, describe_error, save_json, human_size, remove_completed_identity
@@ -19,7 +21,8 @@ from core import Engine, parse_hf_url, file_url, file_page_url, resolve_file, li
 BASE = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
 RESOURCES = Path(getattr(sys, '_MEIPASS', BASE))
 MODE = 8
-APP_VERSION = '1.0.1'
+APP_VERSION = '1.1.0'
+UPDATE_API = 'https://api.github.com/repos/yujianvip/Comfyui-HFDownloader/releases/latest'
 STATES = {'staged':'○ 等待确认', 'preparing':'… 读取信息', 'active':'● 下载中', 'waiting':'○ 排队中', 'paused':'Ⅱ 已暂停', 'error':'! 下载失败', 'complete':'✓ 已完成', 'checking':'◇ 校验中', 'removing':'… 正在移除'}
 TOKEN_CREDENTIAL = 'HFDesktopDownloader.Token.v1'
 QUEUE_SCHEMA_VERSION = 1
@@ -218,6 +221,9 @@ def normalize_settings(payload, warnings=None):
     diffusion_dir=payload.get('diffusion_dir','diffusion_models')
     if diffusion_dir not in ('diffusion_models','unet'):diffusion_dir='diffusion_models';invalid=True
     result['diffusion_dir']=diffusion_dir
+    clip_dir=payload.get('clip_dir','clip')
+    if clip_dir not in ('clip','text_encoders'):clip_dir='clip';invalid=True
+    result['clip_dir']=clip_dir
     favorites=payload.get('comfy_favorites',[])
     if not isinstance(favorites,list):favorites=[];invalid=True
     result['comfy_favorites']=favorites
@@ -225,6 +231,10 @@ def normalize_settings(payload, warnings=None):
     except (TypeError,ValueError):input_rows=3;invalid=True
     result['input_rows']=max(3,min(18,input_rows))
     if result['input_rows']!=input_rows:invalid=True
+    for key in ('success_popup','success_sound','failure_popup','failure_sound'):
+        value=payload.get(key,True)
+        if not isinstance(value,bool):value=True;invalid=True
+        result[key]=value
     if invalid:warnings.append('设置中的部分内容无效，已恢复默认值。')
     return result
 
@@ -1207,6 +1217,11 @@ class App(tk.Tk):
         self.connections=tk.StringVar(value=saved_mode if saved_mode in ('8','16') else str(MODE))
         self.comfy_root=tk.StringVar(value=self.cfg.get('comfy_root',''))
         self.diffusion_dir=tk.StringVar(value=self.cfg.get('diffusion_dir','diffusion_models'))
+        self.clip_dir=tk.StringVar(value=self.cfg.get('clip_dir','clip'))
+        self.success_popup=tk.BooleanVar(value=self.cfg['success_popup'])
+        self.success_sound=tk.BooleanVar(value=self.cfg['success_sound'])
+        self.failure_popup=tk.BooleanVar(value=self.cfg['failure_popup'])
+        self.failure_sound=tk.BooleanVar(value=self.cfg['failure_sound'])
         self.comfy_favorites=[]
         for value in self.cfg.get('comfy_favorites',[]):
             favorite=normalize_comfy_favorite(value)
@@ -1244,6 +1259,7 @@ class App(tk.Tk):
         threading.Thread(target=self.poller, daemon=True).start()
         self.after(100, self.drain)
         self.after(5000, self.autosave)
+        self.after(1500, self.check_for_updates)
         self.bind('<Control-Return>', lambda e:self.add_links())
         self.deiconify()
 
@@ -1285,6 +1301,8 @@ class App(tk.Tk):
         style.configure('Card.TLabel', background='#ffffff', foreground='#172933')
         style.configure('Card.TRadiobutton', background='#ffffff', foreground='#172933', padding=(2,4))
         style.map('Card.TRadiobutton', background=[('active','#ffffff')])
+        style.configure('Card.TCheckbutton', background='#ffffff', foreground='#172933', padding=(2,4))
+        style.map('Card.TCheckbutton', background=[('active','#ffffff')])
         style.configure('Section.TLabel', background='#ffffff', foreground='#10252f', font=('Microsoft YaHei UI',12,'bold'))
         style.configure('SectionTitle.TLabel', background='#ffffff', foreground='#10252f', font=('Microsoft YaHei UI',13,'bold'))
         style.configure('QueueTitle.TLabel', background='#f5f7f8', foreground='#10252f', font=('Microsoft YaHei UI',13,'bold'))
@@ -1361,9 +1379,12 @@ class App(tk.Tk):
         header_actions.grid(row=0,column=2,sticky='e')
         settings_button=ttk.Button(header_actions,text='设置',style='HeaderIcon.TButton',width=4,command=self.comfy_settings)
         settings_button.pack(side='right',padx=(8,0))
+        self.update_button=ttk.Button(header_actions,text='检查更新',style='HeaderIcon.TButton',width=7,command=self.manual_update_check)
+        self.update_button.pack(side='right',padx=(8,0))
         token_button=ttk.Button(header_actions,text='Token / 帮助',style='HeaderIcon.TButton',width=10,command=self.advanced)
         token_button.pack(side='right')
         Tooltip(settings_button,'\u8bbe\u7f6e')
+        Tooltip(self.update_button,'下载并安装最新版本')
         Tooltip(token_button,'HF Token / \u5e2e\u52a9')
         quick=tk.Frame(header,bg='#ffffff',highlightbackground='#dce4e8',highlightthickness=1,padx=6,pady=4)
         quick.grid(row=0,column=1,sticky='w',padx=(8,8))
@@ -1567,6 +1588,92 @@ class App(tk.Tk):
                 msg = describe_error(exc)
                 self.events.put(lambda msg=msg:failure(msg) if failure else self.note.set(msg))
         self.workers.submit(work)
+
+    @staticmethod
+    def version_tuple(value):
+        match=re.fullmatch(r'v?(\d+)\.(\d+)\.(\d+)',str(value).strip())
+        return tuple(map(int,match.groups())) if match else None
+
+    def github_opener(self):
+        proxy=self.proxy.get().strip()
+        handler=urllib.request.ProxyHandler({'http':proxy,'https':proxy}) if proxy else urllib.request.ProxyHandler()
+        return urllib.request.build_opener(handler)
+
+    def fetch_latest_release(self):
+        request=urllib.request.Request(UPDATE_API,headers={
+            'Accept':'application/vnd.github+json',
+            'User-Agent':f'HFDownloader/{APP_VERSION}',
+        })
+        with self.github_opener().open(request,timeout=15) as response:
+            release=json.loads(response.read().decode('utf-8'))
+        latest=self.version_tuple(release.get('tag_name',''))
+        current=self.version_tuple(APP_VERSION)
+        if not latest or not current or latest<=current:return None
+        expected=f'HFDownloader-v{release["tag_name"].lstrip("v")}-win64.zip'.casefold()
+        assets=release.get('assets',[])
+        asset=next((item for item in assets if str(item.get('name','')).casefold()==expected),None)
+        if not asset or not asset.get('browser_download_url'):
+            raise ValueError('发现新版本，但 Release 中没有与版本号匹配的 Windows 更新包。')
+        return {'version':release['tag_name'].lstrip('v'),'url':asset['browser_download_url'],
+                'name':asset['name'],'page':release.get('html_url','')}
+
+    def check_for_updates(self, manual=False):
+        if self.closing:return
+        def found(release):
+            self.update_button.state(['!disabled'])
+            if not release:
+                self.update_button.configure(text='检查更新',command=self.manual_update_check)
+                if manual:self.notice_dialog(self,'检查更新','当前已是最新版本。')
+                return
+            self.available_update=release
+            self.update_button.configure(text='更新 '+release['version'],command=self.install_available_update)
+            self.note.set('发现新版本 '+release['version']+'，点击右上角“更新”可一键安装。')
+        def failed(message):
+            self.update_button.state(['!disabled']);self.update_button.configure(text='检查更新',command=self.manual_update_check)
+            if manual:self.notice_dialog(self,'检查更新失败',message)
+        if manual:
+            self.update_button.state(['disabled']);self.update_button.configure(text='检查中…')
+        self.submit(self.fetch_latest_release,found,failed)
+
+    def manual_update_check(self):
+        self.check_for_updates(True)
+
+    def install_available_update(self):
+        release=getattr(self,'available_update',None)
+        if not release:return
+        busy=any(job['status'] in ('preparing','active','waiting','checking') for job in self.jobs.values())
+        if busy:
+            self.notice_dialog(self,'暂不能更新','请先等待正在下载或校验的任务完成，或暂停这些任务后再更新。')
+            return
+        choice=self.decision_dialog(self,'更新到 '+release['version'],
+            '将下载最新 Windows 版本。下载完成后程序会自动关闭、替换文件并重新打开。',
+            [('update','立即更新','Accent.TButton',True),('cancel','取消','Secondary.TButton',True)])
+        if choice!='update':return
+        self.update_button.state(['disabled']);self.update_button.configure(text='下载中…')
+        self.note.set('正在下载更新 '+release['version']+'…')
+        def download():
+            update_dir=self.data/'updates';update_dir.mkdir(parents=True,exist_ok=True)
+            package=update_dir/release['name']
+            request=urllib.request.Request(release['url'],headers={'User-Agent':f'HFDownloader/{APP_VERSION}'})
+            with self.github_opener().open(request,timeout=60) as response,package.open('wb') as output:
+                shutil.copyfileobj(response,output,1024*1024)
+            if package.stat().st_size<1024*1024:raise ValueError('更新包下载不完整。')
+            return package
+        def downloaded(package):
+            updater=RESOURCES/'updater.ps1'
+            if not updater.is_file():
+                update_failed('更新组件缺失。');return
+            args=['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',
+                  '-File',str(updater),'-PackageZip',str(package),'-InstallDir',str(BASE),
+                  '-ExistingProcessId',str(os.getpid()),'-LaunchPath',str(BASE/'HFDownloader.exe'),
+                  '-ErrorLog',str(self.data/'update-error.txt')]
+            subprocess.Popen(args,creationflags=0x08000000,close_fds=True)
+            self.close_app()
+        def update_failed(message):
+            self.update_button.state(['!disabled']);self.update_button.configure(text='更新 '+release['version'])
+            self.note.set('更新失败：'+message)
+            self.notice_dialog(self,'更新失败',message)
+        self.submit(download,downloaded,update_failed)
 
     def drain(self):
         if self.closing:
@@ -1824,36 +1931,111 @@ class App(tk.Tk):
         self.refresh_summary()
         return ident
 
+    def play_notification_sound(self, filename):
+        sound_path=RESOURCES/'sounds'/filename
+        if not sound_path.is_file():
+            self.note.set('提醒声音文件不存在：'+filename)
+            return
+        def play():
+            alias='hf_notify_'+uuid.uuid4().hex
+            command=f'open "{sound_path}" type MPEGVideo alias {alias}'
+            winmm=ctypes.WinDLL('winmm',use_last_error=True)
+            winmm.mciSendStringW.argtypes=[ctypes.c_wchar_p,ctypes.c_wchar_p,ctypes.c_uint,ctypes.c_void_p]
+            winmm.mciSendStringW.restype=ctypes.c_uint
+            result=winmm.mciSendStringW(command,None,0,None)
+            if result:return
+            try:winmm.mciSendStringW(f'play {alias} wait',None,0,None)
+            finally:winmm.mciSendStringW(f'close {alias}',None,0,None)
+        threading.Thread(target=play,name='HFDownloader-notification-sound',daemon=True).start()
+
+    def show_download_notice(self, job, succeeded):
+        popup_enabled=self.success_popup.get() if succeeded else self.failure_popup.get()
+        sound_enabled=self.success_sound.get() if succeeded else self.failure_sound.get()
+        if sound_enabled:self.play_notification_sound('叮.mp3' if succeeded else '波浪.mp3')
+        if not popup_enabled:return
+        title='下载成功' if succeeded else '下载失败'
+        color='#198b79' if succeeded else '#bf5147'
+        message=job['filename'] if succeeded else job.get('error') or job['filename']
+        popup=tk.Toplevel(self);popup.withdraw();popup.title(title);popup.resizable(False,False)
+        popup.configure(bg='#f5f7f8');popup.transient(self)
+        card=RoundedSurface(popup,padding=(18,14),fill='#ffffff',outline='#dce4e8',shadow='#d8e1e6')
+        card.pack(fill='both',expand=True,padx=8,pady=8)
+        box=card.content
+        heading=ttk.Frame(box,style='Card.TFrame');heading.pack(fill='x')
+        ttk.Label(heading,text=title,style='DialogTitle.TLabel',foreground=color).pack(side='left')
+        ttk.Button(heading,text='×',width=3,command=popup.destroy).pack(side='right')
+        ttk.Label(box,text=message,style='Card.TLabel',wraplength=320,justify='left').pack(anchor='w',pady=(10,0))
+        popup.update_idletasks()
+        width=max(350,popup.winfo_reqwidth());height=max(115,popup.winfo_reqheight())
+        area=monitor_work_area(self)
+        x=area[2]-width-24;y=area[3]-height-24
+        x,y,width,height=fit_window_rect(x,y,width,height,area,24)
+        place_toplevel(popup,x,y,width,height,area,24)
+        popup.deiconify();popup.lift()
+        popup.after(9000,lambda:popup.destroy() if popup.winfo_exists() else None)
+
     def comfy_settings(self):
-        win=tk.Toplevel(self);win.title('ComfyUI \u8bbe\u7f6e');self.center_dialog(win,650,330)
+        win=tk.Toplevel(self);win.title('ComfyUI 与下载设置');self.center_dialog(win,650,520)
         win.configure(bg='#f5f7f8')
         surface=RoundedSurface(win,padding=(20,16),stretch_y=True);surface.pack(fill='both',expand=True,padx=12,pady=12)
         box=surface.content
+        root_value=tk.StringVar(value=self.comfy_root.get())
+        diffusion_value=tk.StringVar(value=self.diffusion_dir.get())
+        clip_value=tk.StringVar(value=self.clip_dir.get())
+        success_popup_value=tk.BooleanVar(value=self.success_popup.get())
+        success_sound_value=tk.BooleanVar(value=self.success_sound.get())
+        failure_popup_value=tk.BooleanVar(value=self.failure_popup.get())
+        failure_sound_value=tk.BooleanVar(value=self.failure_sound.get())
         ttk.Label(box,text='ComfyUI \u6839\u76ee\u5f55',style='Section.TLabel').pack(anchor='w')
         row=ttk.Frame(box,style='Card.TFrame');row.pack(fill='x',pady=8)
-        ttk.Entry(row,textvariable=self.comfy_root).pack(side='left',fill='x',expand=True)
-        ttk.Button(row,text='\u9009\u62e9',command=lambda: self.comfy_root.set(filedialog.askdirectory(parent=win,title='\u9009\u62e9 ComfyUI \u6839\u76ee\u5f55') or self.comfy_root.get())).pack(side='left',padx=(8,0))
+        ttk.Entry(row,textvariable=root_value).pack(side='left',fill='x',expand=True)
+        ttk.Button(row,text='\u9009\u62e9',command=lambda: root_value.set(filedialog.askdirectory(parent=win,title='\u9009\u62e9 ComfyUI \u6839\u76ee\u5f55') or root_value.get())).pack(side='left',padx=(8,0))
         ttk.Label(box,text='\u6269\u6563\u6a21\u578b\u76ee\u5f55',style='Section.TLabel').pack(anchor='w',pady=(8,3))
-        ttk.Radiobutton(box,text='models\\diffusion_models',style='Card.TRadiobutton',variable=self.diffusion_dir,value='diffusion_models').pack(anchor='w')
-        ttk.Radiobutton(box,text='models\\unet',style='Card.TRadiobutton',variable=self.diffusion_dir,value='unet').pack(anchor='w')
+        diffusion_row=ttk.Frame(box,style='Card.TFrame');diffusion_row.pack(fill='x')
+        ttk.Radiobutton(diffusion_row,text='models\\diffusion_models',style='Card.TRadiobutton',variable=diffusion_value,value='diffusion_models').pack(side='left')
+        ttk.Radiobutton(diffusion_row,text='models\\unet',style='Card.TRadiobutton',variable=diffusion_value,value='unet').pack(side='left',padx=(24,0))
+        ttk.Label(box,text='CLIP \u6a21\u578b\u76ee\u5f55',style='Section.TLabel').pack(anchor='w',pady=(12,3))
+        clip_row=ttk.Frame(box,style='Card.TFrame');clip_row.pack(fill='x')
+        ttk.Radiobutton(clip_row,text='models\\clip',style='Card.TRadiobutton',variable=clip_value,value='clip').pack(side='left')
+        ttk.Radiobutton(clip_row,text='models\\text_encoders',style='Card.TRadiobutton',variable=clip_value,value='text_encoders').pack(side='left',padx=(24,0))
+        ttk.Label(box,text='下载提醒',style='Section.TLabel').pack(anchor='w',pady=(14,4))
+        notify_box=ttk.Frame(box,style='Card.TFrame');notify_box.pack(fill='x')
+        for label,popup_var,sound_var in (
+            ('成功',success_popup_value,success_sound_value),
+            ('失败',failure_popup_value,failure_sound_value),
+        ):
+            row=ttk.Frame(notify_box,style='Card.TFrame');row.pack(fill='x',pady=3)
+            ttk.Label(row,text=label,style='Card.TLabel',width=8).pack(side='left')
+            ttk.Checkbutton(row,text='弹窗提醒',style='Card.TCheckbutton',variable=popup_var).pack(side='left',padx=(4,18))
+            ttk.Checkbutton(row,text='声音提醒',style='Card.TCheckbutton',variable=sound_var).pack(side='left')
         def save():
-            root=Path(self.comfy_root.get()).expanduser()
-            if not (root/'models').is_dir(): self.notice_dialog(win,'ComfyUI 设置','请选择包含 models 文件夹的 ComfyUI 根目录。');return
-            if not (root/'main.py').exists() and self.decision_dialog(win,'ComfyUI 设置','未发现 main.py，仍保存这个目录？',
-                [('yes','仍然保存','Accent.TButton',True),('no','返回检查','Secondary.TButton',True)])!='yes':return
-            self.comfy_root.set(str(root));self.persist();win.destroy()
+            root_text=root_value.get().strip()
+            if root_text:
+                root=Path(root_text).expanduser()
+                if not (root/'models').is_dir(): self.notice_dialog(win,'ComfyUI 设置','请选择包含 models 文件夹的 ComfyUI 根目录。');return
+                if not (root/'main.py').exists() and self.decision_dialog(win,'ComfyUI 设置','未发现 main.py，仍保存这个目录？',
+                    [('yes','仍然保存','Accent.TButton',True),('no','返回检查','Secondary.TButton',True)])!='yes':return
+                root_text=str(root)
+            self.comfy_root.set(root_text)
+            self.diffusion_dir.set(diffusion_value.get());self.clip_dir.set(clip_value.get())
+            self.success_popup.set(success_popup_value.get());self.success_sound.set(success_sound_value.get())
+            self.failure_popup.set(failure_popup_value.get());self.failure_sound.set(failure_sound_value.get())
+            self.persist();win.destroy()
         footer=ttk.Frame(box,style='Card.TFrame');footer.pack(side='bottom',fill='x',pady=(12,0))
         ttk.Button(footer,text='\u4fdd\u5b58',style='Accent.TButton',command=save).pack(side='right')
         win.update_idletasks();win.deiconify();win.lift()
 
     def comfy_preferences(self, info):
         model_kind=detect_model_type(info['filename'])
+        if model_kind=='CLIP / \u6587\u672c\u7f16\u7801\u5668':
+            clip_dir=self.clip_dir.get()
+            other_clip_dir='clip' if clip_dir=='text_encoders' else 'text_encoders'
+            return (clip_dir,other_clip_dir,'text_encoder')
         names={
             'UNet / \u6269\u6563\u6a21\u578b':(self.diffusion_dir.get(),'diffusion_models','unet'),
             '\u4e3b\u6a21\u578b':('checkpoints','checkpoint'),
             'LoRA':('loras','lora'),
             'VAE':('vae',),
-            'CLIP / \u6587\u672c\u7f16\u7801\u5668':('text_encoders','text_encoder','clip'),
             'ControlNet':('controlnet','controlnets'),
             '\u653e\u5927\u6a21\u578b':('upscale_models','upscalers'),
             '\u5d4c\u5165':('embeddings','embedding'),
@@ -2210,8 +2392,11 @@ class App(tk.Tk):
         job['starting']=True
         job['status']='preparing';self.render(job)
         snapshot=dict(job)
+        restart={'detached':False}
         def start():
-            if snapshot.get('gid'):self.detach_engine_job(snapshot['gid'])
+            if snapshot.get('gid'):
+                self.detach_engine_job(snapshot['gid'])
+                restart['detached']=True
             return self.engine.add(snapshot,proxy,token)
         def ready(gid):
             if ident not in self.jobs:
@@ -2223,7 +2408,12 @@ class App(tk.Tk):
             self.note.set('已加入下载队列，正在等待开始：'+job['filename'])
             self.persist();self.render(job)
             if job.get('priority'):self.prioritize_gid(ident)
-        self.submit(start,ready,lambda msg:self.fail(ident,msg))
+        def failed(msg):
+            current=self.jobs.get(ident)
+            if restart['detached'] and current and current.get('gid')==snapshot.get('gid'):
+                current['gid']=None
+            self.fail(ident,msg)
+        self.submit(start,ready,failed)
 
     def fail(self, ident, msg):
         if ident in self.jobs and not self.jobs[ident].get('removing'):
@@ -3016,6 +3206,9 @@ class App(tk.Tk):
                 self.note.set('已暂停：'+job['filename'])
             elif status=='error' and previous_status!='error':
                 self.note.set('下载失败：'+job.get('error',job['filename']))
+                self.show_download_notice(job,False)
+            elif status=='complete' and previous_status!='complete':
+                self.show_download_notice(job,True)
         self.refresh_summary();self.selection_changed()
 
     def refresh_summary(self):
@@ -3360,8 +3553,9 @@ class App(tk.Tk):
         box=surface.content
         ttk.Label(box,text='HF Token',style='DialogTitle.TLabel').pack(anchor='w')
         status=tk.StringVar(value='\u5f53\u524d\u72b6\u6001\uff1a'+('\u5df2\u6dfb\u52a0' if self.token.get().strip() else '\u672a\u6dfb\u52a0'))
+        token_value=tk.StringVar(value=self.token.get())
         ttk.Label(box,textvariable=status,style='Muted.TLabel',foreground='#344550').pack(anchor='w',pady=(4,8))
-        ttk.Entry(box,textvariable=self.token,show='\u2022',width=70).pack(fill='x')
+        ttk.Entry(box,textvariable=token_value,show='\u2022',width=70).pack(fill='x')
         ttk.Label(box,text='获取方法：\n1. 登录 Hugging Face；',style='Card.TLabel',justify='left').pack(anchor='w',pady=(14,0))
         link_row=ttk.Frame(box,style='Card.TFrame');link_row.pack(anchor='w')
         ttk.Label(link_row,text='2. 打开 ',style='Card.TLabel').pack(side='left')
@@ -3382,11 +3576,12 @@ class App(tk.Tk):
         ttk.Label(box,text=text,style='Card.TLabel',wraplength=605,justify='left').pack(anchor='w')
         buttons=ttk.Frame(box,style='Card.TFrame');buttons.pack(fill='x',pady=(16,0))
         def save():
-            value=self.token.get().strip()
+            value=token_value.get().strip()
             if not value:
                 status.set('\u5f53\u524d\u72b6\u6001\uff1a\u8bf7\u5148\u7c98\u8d34 Token');return
             try:
                 save_token(value)
+                self.token.set(value)
                 status.set('\u5f53\u524d\u72b6\u6001\uff1a\u5df2\u6dfb\u52a0')
                 self.note.set('HF Token \u5df2\u4fdd\u5b58\uff0c\u540e\u7eed\u6240\u6709\u4efb\u52a1\u90fd\u4f1a\u4f7f\u7528\u3002')
             except Exception as exc:
@@ -3394,7 +3589,7 @@ class App(tk.Tk):
         def remove():
             try:
                 delete_saved_token()
-                self.token.set('');status.set('\u5f53\u524d\u72b6\u6001\uff1a\u672a\u6dfb\u52a0')
+                token_value.set('');self.token.set('');status.set('\u5f53\u524d\u72b6\u6001\uff1a\u672a\u6dfb\u52a0')
                 self.note.set('HF Token \u5df2\u5220\u9664\u3002')
             except Exception as exc:
                 status.set('\u5220\u9664\u5931\u8d25\uff1a'+describe_error(exc))
@@ -3405,7 +3600,7 @@ class App(tk.Tk):
 
     def persist(self):
         try:
-            save_json(self.data/'settings.json',{'schema_version':1,'folder':self.folder.get(),'default_folder':Path(self.folder.get()).expanduser()==self.default_downloads,'proxy':self.proxy.get(),'parallel':int(self.parallel.get()),'connections':int(self.connections.get()),'comfy_root':self.comfy_root.get(),'diffusion_dir':self.diffusion_dir.get(),'comfy_favorites':self.comfy_favorites,'input_rows':self.input_rows},keep_backup=True)
+            save_json(self.data/'settings.json',{'schema_version':1,'folder':self.folder.get(),'default_folder':Path(self.folder.get()).expanduser()==self.default_downloads,'proxy':self.proxy.get(),'parallel':int(self.parallel.get()),'connections':int(self.connections.get()),'comfy_root':self.comfy_root.get(),'diffusion_dir':self.diffusion_dir.get(),'clip_dir':self.clip_dir.get(),'comfy_favorites':self.comfy_favorites,'input_rows':self.input_rows,'success_popup':self.success_popup.get(),'success_sound':self.success_sound.get(),'failure_popup':self.failure_popup.get(),'failure_sound':self.failure_sound.get()},keep_backup=True)
             jobs=[{k:v for k,v in self.jobs[ident].items() if k not in ('gid','starting','removing','delete_files','remove_previous_status')}
                   for ident in self.tree.get_children() if ident in self.jobs]
             save_json(self.data/'queue.json',{'schema_version':QUEUE_SCHEMA_VERSION,'jobs':jobs},keep_backup=True)
